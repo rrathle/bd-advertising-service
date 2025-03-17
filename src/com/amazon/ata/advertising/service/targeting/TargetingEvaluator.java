@@ -4,17 +4,21 @@ import com.amazon.ata.advertising.service.model.RequestContext;
 import com.amazon.ata.advertising.service.targeting.predicate.TargetingPredicate;
 import com.amazon.ata.advertising.service.targeting.predicate.TargetingPredicateResult;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
  * Evaluates TargetingPredicates for a given RequestContext.
  */
 public class TargetingEvaluator {
     public static final boolean IMPLEMENTED_STREAMS = true;
-    public static final boolean IMPLEMENTED_CONCURRENCY = false;
+    public static final boolean IMPLEMENTED_CONCURRENCY = true;
+    private static final int THREAD_POOL_SIZE = 10;
+    private static final ExecutorService executor = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
+
     private final RequestContext requestContext;
 
     /**
@@ -47,15 +51,34 @@ public class TargetingEvaluator {
 
 //    }
 
-        // add Optional.ofNullable() and .orElse() if getTargetingPredicates could return null
-        return Optional.ofNullable(targetingGroup.getTargetingPredicates())
-                .orElse(Collections.emptyList())
-                .stream()
-                .map(predicate -> predicate.evaluate(requestContext))
-                .filter(Objects::nonNull)
-                .allMatch(TargetingPredicateResult::isTrue)
-                ? TargetingPredicateResult.TRUE
-                : TargetingPredicateResult.FALSE;
+//
+        List<TargetingPredicate> predicates = Optional.ofNullable(targetingGroup.getTargetingPredicates())
+                .orElse(Collections.emptyList());
+
+        List<Future<TargetingPredicateResult>> futures = new ArrayList<>();
+
+        for (TargetingPredicate predicate : predicates) {
+            futures.add(executor.submit(() -> predicate.evaluate(requestContext)));
+        }
+
+        try {
+            for (Future<TargetingPredicateResult> future : futures) {
+                if (!future.get().isTrue()) {
+                    return TargetingPredicateResult.FALSE;
+                }
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Error evaluating targeting predicates concurrently", e);
+        }
+        return TargetingPredicateResult.TRUE;
     }
+
+    public void shutdown() {
+        executor.shutdown();
+    }
+
+
+
 
 }
