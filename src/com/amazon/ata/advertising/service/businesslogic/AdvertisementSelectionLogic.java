@@ -62,74 +62,53 @@ public class AdvertisementSelectionLogic {
      * not be generated.
      */
     public GeneratedAdvertisement selectAdvertisement(String customerId, String marketplaceId) {
-//        GeneratedAdvertisement generatedAdvertisement = new EmptyGeneratedAdvertisement();
-//        if (StringUtils.isEmpty(marketplaceId)) {
-//            LOG.warn("MarketplaceId cannot be null or empty. Returning empty ad.");
-//        } else {
-//            final List<AdvertisementContent> contents = contentDao.get(marketplaceId);
-//
-//            if (CollectionUtils.isNotEmpty(contents)) {
-//                AdvertisementContent randomAdvertisementContent = contents.get(random.nextInt(contents.size()));
-//                generatedAdvertisement = new GeneratedAdvertisement(randomAdvertisementContent);
-//            }
-//
-//        }
-//
-//        return generatedAdvertisement;
-            if (StringUtils.isEmpty(marketplaceId)) {
-                System.out.println("WARNING: MarketplaceId cannot be null or empty. Returning empty ad.");
-                return new EmptyGeneratedAdvertisement();
-            }
-
-            System.out.println("Retrieving advertisements for marketplace: " + marketplaceId);
-            List<AdvertisementContent> contents = contentDao.get(marketplaceId);
-
-            if (CollectionUtils.isEmpty(contents)) {
-                System.out.println("WARNING: No advertisements found for marketplace: " + marketplaceId + ". Returning empty ad.");
-                return new EmptyGeneratedAdvertisement();
-            }
-
-            // Fetch all targeting groups for the given advertisements
-            System.out.println("Fetching targeting groups for " + contents.size() + " advertisements...");
-            Map<String, List<TargetingGroup>> targetingGroupsByContent = contents.stream()
-                    .collect(Collectors.toMap(
-                            AdvertisementContent::getContentId,
-                            content -> {
-                                List<TargetingGroup> groups = targetingGroupDao.get(content.getContentId());
-                                System.out.println("DEBUG: Content ID " + content.getContentId() + " has " + (groups != null ? groups.size() : 0) + " targeting groups.");
-                                return groups;
-                            }
-                    ));
-
-            // Create RequestContext once for evaluation
-            RequestContext requestContext = new RequestContext(customerId, marketplaceId);
-            TargetingEvaluator evaluator = new TargetingEvaluator(requestContext);
-
-            // Filter eligible advertisements
-            System.out.println("Filtering eligible advertisements...");
-            List<AdvertisementContent> eligibleAds = contents.stream()
-                    .filter(content -> {
-                        List<TargetingGroup> contentTargetingGroups = targetingGroupsByContent.get(content.getContentId());
-                        boolean isEligible = contentTargetingGroups != null && contentTargetingGroups.stream()
-                                .anyMatch(group -> evaluator.evaluate(group).isTrue());
-
-                        System.out.println("DEBUG: Content ID " + content.getContentId() + " eligibility: " + isEligible);
-                        return isEligible;
-                    })
-                    .collect(Collectors.toList());
-
-            // If no eligible ads, return empty advertisement
-            if (eligibleAds.isEmpty()) {
-                System.out.println("WARNING: No eligible advertisements found for customer " + customerId + " in marketplace " + marketplaceId + ". Returning empty ad.");
-                return new EmptyGeneratedAdvertisement();
-            }
-
-            // Randomly select an advertisement from eligible ads
-            AdvertisementContent selectedContent = eligibleAds.get(random.nextInt(eligibleAds.size()));
-            System.out.println("SUCCESS: Selected advertisement ID: " + selectedContent.getContentId());
-            return new GeneratedAdvertisement(selectedContent);
+        if (StringUtils.isEmpty(marketplaceId)) {
+            LOG.warn("MarketplaceId cannot be null or empty. Returning empty ad.");
+            return new EmptyGeneratedAdvertisement();
         }
 
+        List<AdvertisementContent> contents = contentDao.get(marketplaceId);
+        if (CollectionUtils.isEmpty(contents)) {
+            LOG.warn("No advertisements found for marketplace: " + marketplaceId);
+            return new EmptyGeneratedAdvertisement();
+        }
 
+        Map<String, List<TargetingGroup>> targetingGroupsByContent = contents.stream()
+                .collect(Collectors.toMap(
+                        AdvertisementContent::getContentId,
+                        content -> targetingGroupDao.get(content.getContentId())
+                ));
+
+        RequestContext requestContext = new RequestContext(customerId, marketplaceId);
+        TargetingEvaluator evaluator = new TargetingEvaluator(requestContext);
+
+        Comparator<Double> descendingCTR = Comparator.reverseOrder();
+        TreeMap<Double, AdvertisementContent> sortedAds = new TreeMap<>(descendingCTR);
+
+        for (AdvertisementContent content : contents) {
+            List<TargetingGroup> groups = targetingGroupsByContent.get(content.getContentId());
+
+            if (groups == null) continue;
+
+            // Find highest CTR among eligible targeting groups
+            OptionalDouble bestCTR = groups.stream()
+                    .filter(group -> evaluator.evaluate(group).isTrue())
+                    .mapToDouble(TargetingGroup::getClickThroughRate)
+                    .max();
+
+            if (bestCTR.isPresent()) {
+                sortedAds.put(bestCTR.getAsDouble(), content);
+            }
+        }
+
+        if (sortedAds.isEmpty()) {
+            return new EmptyGeneratedAdvertisement();
+        }
+
+        return new GeneratedAdvertisement(sortedAds.firstEntry().getValue());
     }
+
+
+
+}
 
